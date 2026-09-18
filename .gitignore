@@ -1,0 +1,13 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+tfplan.binary
+tfplan.json
+build/
+
+# insecure fixture artifacts
+test/insecure-fixture/.terraform/
+test/insecure-fixture/bad.binary
+test/insecure-fixture/bad.json
