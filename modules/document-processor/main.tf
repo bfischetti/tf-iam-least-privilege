@@ -103,7 +103,7 @@ data "aws_iam_policy_document" "assume" {
 
 # The permission policy. This is the artifact under review.
 #
-# Least-privilege choices, deliberate and defensible:
+# Least-privilege choices:
 #   - Read is granted ONLY on the ingest bucket's objects (GetObject), not the
 #     bucket itself, not the output bucket.
 #   - Write is granted ONLY on the output bucket's objects (PutObject), never

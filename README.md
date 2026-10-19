@@ -1,6 +1,6 @@
 # Least-privilege IAM, enforced in CI
 
-A small Terraform module with a deliberately tight IAM role, plus an Open Policy Agent guardrail that fails CI if anyone introduces a wildcard permission. The point is not the Lambda. The point is that "least privilege" is a property the pipeline enforces, not a habit you hope people keep.
+A small Terraform module with a deliberately tight IAM role, plus an Open Policy Agent guardrail that fails CI if anyone introduces a wildcard permission. The Lambda is only there to give the role something to do. The interesting part is the pipeline: any policy that grants more than it should fails the build before it reaches an account.
 
 ## What it builds
 
@@ -12,10 +12,10 @@ The interesting file is [`modules/document-processor/main.tf`](modules/document-
 |---|---|---|---|
 | Read input | `s3:GetObject` | ingest bucket objects only | The function reads uploads. It cannot read the output bucket. |
 | Write output | `s3:PutObject` | output bucket objects only | It writes results. It cannot overwrite the input it was handed. |
-| List | `s3:ListBucket` | the two bucket ARNs, not `*` | Enough to enumerate its own buckets, no others. |
-| Logs | `logs:CreateLogStream`, `logs:PutLogEvents` | this function's own log group ARN | It writes its own logs, not every log group in the account. |
+| List | `s3:ListBucket` | the two bucket ARNs only | Enough to enumerate its own buckets, no others. |
+| Logs | `logs:CreateLogStream`, `logs:PutLogEvents` | this function's own log group ARN | It writes its own logs and no other log group in the account. |
 
-No `s3:*`. No `"Resource": "*"` on a data action. The read/write split across two buckets is the least-privilege decision that matters most here: a processor that can read its input and overwrite it is a processor that can corrupt the thing it was asked to protect.
+There is no `s3:*` and no `"Resource": "*"` on any data action. The most important decision is the read/write split across two buckets: if the processor could also write to the ingest bucket, a bug in it could overwrite or corrupt the original upload.
 
 ## The guardrail
 
@@ -26,11 +26,11 @@ No `s3:*`. No `"Resource": "*"` on a data action. The read/write split across tw
 3. **`"Resource": "*"`** on data actions (with a tiny allowlist for the handful of actions that are genuinely account-scoped, like `cloudwatch:PutMetricData`).
 4. **Over-open trust policies**: `Principal: "*"` or an AWS principal of `"*"`, which would let anyone assume the role.
 
-Checking the *plan* rather than the HCL means it sees the real, resolved policy JSON, including anything produced by `jsonencode`, a module, or a `for_each`. A grep over `.tf` files would miss all of those.
+Checking the plan means the guardrail sees the resolved policy JSON, including anything produced by `jsonencode`, a module, or a `for_each`. A grep over `.tf` files would miss all of those.
 
 ## Proof it works
 
-A passing check on a clean module proves nothing on its own. So the repo also carries [`test/insecure-fixture/`](test/insecure-fixture/main.tf), a module that intentionally grants `s3:*` on `*`, full admin, and a world-assumable trust policy. CI plans it and asserts the guardrail **rejects** it. If the insecure fixture ever passes, the build fails on regression.
+A passing check on the real module only shows that the module is clean. To show the guardrail catches violations, the repo also carries [`test/insecure-fixture/`](test/insecure-fixture/main.tf), a module that intentionally grants `s3:*` on `*`, full admin, and a world-assumable trust policy. CI plans it and asserts the guardrail **rejects** it. If the insecure fixture ever passes, the build fails.
 
 ```
 # the real module: guardrail passes
@@ -45,7 +45,7 @@ OK: guardrail correctly rejected the insecure fixture
 
 ## Running it locally
 
-No AWS account or credentials are needed. The provider is configured to skip credential and account checks, and region and account ID are passed in as variables rather than discovered from a live account, so `plan` renders the full IAM offline.
+No AWS account or credentials are needed. The provider is configured to skip credential and account checks, and region and account ID are passed in as variables, so `plan` renders the full IAM offline.
 
 ```bash
 make init      # terraform init
@@ -55,13 +55,13 @@ make test-bad  # plan the insecure fixture + assert the guardrail rejects it
 
 Requires `terraform` and `conftest` on the path. CI runs the same targets on every push and pull request; see [`.github/workflows/iam-guardrail.yml`](.github/workflows/iam-guardrail.yml).
 
-## A note on Terraform vs AWS CDK
+## Terraform and AWS CDK
 
-I have built production infrastructure as code in AWS CDK (TypeScript) and wanted this artifact in Terraform, both because it is the more common ask and because the two tools push you toward different habits around IAM.
+I have built production infrastructure as code in AWS CDK (TypeScript) and wrote this one in Terraform, partly because Terraform is more widely used and partly because the two tools lead to different habits around IAM.
 
-CDK's `grant*` helpers are excellent: `bucket.grantRead(fn)` writes a correctly scoped policy for you, which is safer by default than hand-writing JSON. The cost is that the granted permissions are implicit. You read the application code, not the policy, and the actual statements only exist in synthesized CloudFormation. Terraform makes you write the policy document explicitly, which is more verbose and easier to get wrong by hand, but the policy is right there in the diff at review time, which is exactly where a wildcard should get caught.
+CDK's `grant*` helpers are good at this: `bucket.grantRead(fn)` writes a correctly scoped policy for you, which is safer by default than hand-writing JSON. The trade-off is that the permissions are implicit. The application code says `grantRead`, and the actual statements only exist in the synthesized CloudFormation. Terraform makes you write the policy document yourself, which is more verbose and easier to get wrong, but the full policy shows up in the diff at review time, where a wildcard can be caught.
 
-The guardrail closes CDK's blind spot for the Terraform workflow: the permissions are explicit in the plan, and a machine rejects the lazy ones before a human has to notice them. The same idea ports to CDK by running the policy check against `cdk synth` output instead of a Terraform plan.
+The guardrail covers Terraform's weak spot: the policies are explicit in the plan, so a machine can reject the over-broad ones before a reviewer has to spot them. The same approach works for CDK by running a policy check against `cdk synth` output.
 
 ## What I would add next
 
